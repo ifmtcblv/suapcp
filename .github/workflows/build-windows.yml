@@ -1,0 +1,78 @@
+name: Build Windows Executable and Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g., 1.0.0)'
+        required: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build executable
+        run: |
+          pyinstaller --onefile --name suapcp app.py
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup -y
+        env:
+          CHOCOLATEY_INSTALL: C:\ProgramData\chocolatey
+
+      - name: Build Inno Setup Installer
+        run: |
+          iscc /DAppVersion=${{ github.event.inputs.version }} setup.iss
+        shell: cmd
+
+      - name: Rename executable
+        run: ren dist\suapcp.exe suapcp-${{ github.event.inputs.version }}-windows.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: suapcp-windows
+          path: |
+            dist/suapcp-${{ github.event.inputs.version }}-windows.exe
+            dist/suap-cp-${{ github.event.inputs.version }}-Setup.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: suapcp-windows
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: Release ${{ github.event.inputs.version }} (Windows)
+          draft: true
+          prerelease: false
+          body: |
+            Build manual do SUAP-CP para Windows.
+            - Versão: ${{ github.event.inputs.version }}
+            - Conferência de patrimônio via leitura de código de barras.
+            - Inclui instalador.
+          files: |
+            artifacts/suapcp-${{ github.event.inputs.version }}-windows.exe
+            artifacts/suap-cp-${{ github.event.inputs.version }}-Setup.exe
