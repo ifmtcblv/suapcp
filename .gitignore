@@ -38,6 +38,11 @@ htmlcov/
 .pytype/
 .ruff_cache/
 
+# Project
+commit.diff
+data/*
+report/*
+
 # Editors
 .idea/
 .vscode/
@@ -48,8 +53,3 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
-
-# Project
-commit.diff
-data/*
-report/*
