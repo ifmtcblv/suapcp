@@ -192,6 +192,51 @@ class DatabaseManager:
         ''')
         return self.cursor.fetchall()
 
+    def get_sala_stats(self):
+        """Retorna estatísticas de progresso por sala: (id, nome, total, encontrados)."""
+        self.cursor.execute('''
+            SELECT s.id, s.sala,
+                   COUNT(p.id) AS total,
+                   COALESCE(SUM(p.encontrado), 0) AS encontrados
+            FROM salas s
+            LEFT JOIN patrimonios p ON s.id = p.sala_id
+            GROUP BY s.id, s.sala
+            ORDER BY s.sala
+        ''')
+        return self.cursor.fetchall()
+
+    def get_patrimonio_status(self, numero):
+        """Retorna (encontrado, sala_id) do patrimônio ou None se não cadastrado."""
+        self.cursor.execute(
+            "SELECT encontrado, sala_id FROM patrimonios WHERE numero = ?",
+            (numero,)
+        )
+        return self.cursor.fetchone()
+
+    def search_patrimonio(self, numero):
+        """Busca patrimônios pelo número (busca parcial), retornando dados e salas.
+
+        Retorna até 200 resultados com 14 colunas:
+          numero, status, ed, descricao, rotulos, carga_atual,
+          setor_responsavel, campus_carga, numero_de_serie,
+          estado_de_conservacao, encontrado, sala_id_original,
+          sala_original_nome, sala_atual_nome
+        """
+        self.cursor.execute('''
+            SELECT p.numero, p.status, p.ed, p.descricao, p.rotulos, p.carga_atual,
+                   p.setor_responsavel, p.campus_carga, p.numero_de_serie,
+                   p.estado_de_conservacao, p.encontrado, p.sala_id_original,
+                   COALESCE(s_orig.sala, '') AS sala_original_nome,
+                   COALESCE(s_atual.sala, '') AS sala_atual_nome
+            FROM patrimonios p
+            LEFT JOIN salas s_orig ON p.sala_id_original = s_orig.id
+            LEFT JOIN salas s_atual ON p.sala_id = s_atual.id
+            WHERE p.numero LIKE ?
+            ORDER BY p.numero
+            LIMIT 200
+        ''', (f'%{numero}%',))
+        return self.cursor.fetchall()
+
 
 def generate_unique_code(sala_text, existing_codes=None):
     """Gera um código único baseado no hash MD5 do texto da sala."""

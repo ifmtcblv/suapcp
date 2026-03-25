@@ -1,6 +1,6 @@
 import logging
 
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QApplication
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QApplication, QMessageBox
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 
@@ -15,6 +15,11 @@ class ScanWindow(QDialog):
         self.sala_id = sala_id
         self.is_processing = False
 
+        # Contadores da sessão atual
+        self._encontrados_sessao = 0
+        self._nao_cadastrados_sessao = 0
+        self._duplicados_sessao = 0
+
         self.setWindowModality(Qt.ApplicationModal)
 
         screen = QApplication.primaryScreen().size()
@@ -25,34 +30,34 @@ class ScanWindow(QDialog):
 
         layout = QVBoxLayout()
         layout.addStretch(1)
-        
+
         label = QLabel("Escaneie o número do patrimônio:")
         label.setFont(QFont("Arial", 16))
         label.setAlignment(Qt.AlignCenter)
         layout.addWidget(label)
-        
+
         sala_nome = self.get_sala_nome()
         self.sala_label = QLabel(f"Sala: {sala_nome}")
         self.sala_label.setFont(QFont("Arial", 16))
         self.sala_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.sala_label, alignment=Qt.AlignCenter)
-        
+
         self.input = QLineEdit()
         self.input.setFont(QFont("Arial", 16))
         self.input.setMaximumWidth(400)
         self.input.returnPressed.connect(self.handle_return_pressed)
         layout.addWidget(self.input, alignment=Qt.AlignCenter)
-        
+
         self.feedback_label = QLabel("")
         self.feedback_label.setFont(QFont("Arial", 14))
         self.feedback_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.feedback_label)
-        
+
         close_button = QPushButton("Fechar")
         close_button.setFont(QFont("Arial", 12))
         close_button.clicked.connect(self.close)
         layout.addWidget(close_button, alignment=Qt.AlignCenter)
-        
+
         layout.addStretch(1)
         self.setLayout(layout)
         self.input.setFocus()
@@ -64,6 +69,11 @@ class ScanWindow(QDialog):
             result = self.db_manager.cursor.fetchone()
             return result[0] if result else "Desconhecida"
         return "Nenhuma sala selecionada"
+
+    def _set_feedback(self, texto, cor):
+        """Exibe mensagem de feedback com a cor indicada."""
+        self.feedback_label.setText(texto)
+        self.feedback_label.setStyleSheet(f"color: {cor}; font-weight: bold;")
 
     def handle_return_pressed(self):
         """Manipula o sinal returnPressed para evitar múltiplas chamadas."""
@@ -85,25 +95,50 @@ class ScanWindow(QDialog):
         """Processa o escaneamento e mantém a janela aberta para escaneamento contínuo."""
         numero = self.input.text().strip()
         logger.debug("Processando escaneamento: %s", numero)
-        
+
         if not numero:
-            self.feedback_label.setText("Nenhum código escaneado.")
+            self._set_feedback("Nenhum código escaneado.", "gray")
             self.input.clear()
             return
-        
+
         if not self.sala_id:
-            self.feedback_label.setText("Nenhuma sala selecionada.")
+            self._set_feedback("Nenhuma sala selecionada.", "gray")
             self.input.clear()
             return
-        
-        if self.db_manager.mark_patrimonio_encontrado(numero, self.sala_id):
-            self.feedback_label.setText(f"Patrimônio {numero} encontrado na sala {self.sala_label.text().replace('Sala: ', '')}.")
+
+        # Verificar status atual antes de marcar
+        status = self.db_manager.get_patrimonio_status(numero)
+
+        if status is None:
+            # Patrimônio não cadastrado no banco
+            self.db_manager.record_unfound_patrimonio(numero, self.sala_id)
+            self._nao_cadastrados_sessao += 1
+            self._set_feedback(
+                f"Patrimônio {numero} não cadastrado no sistema — registrado.",
+                "rgb(180, 0, 0)",
+            )
+            logger.info("Patrimônio não cadastrado escaneado: %s", numero)
+        elif status[0] == 1:
+            # Já estava marcado como encontrado anteriormente
+            self._duplicados_sessao += 1
+            self._set_feedback(
+                f"Patrimônio {numero} já havia sido marcado como encontrado.",
+                "rgb(180, 100, 0)",
+            )
+            logger.info("Escaneamento duplicado: %s", numero)
+        else:
+            # Marcar como encontrado
+            self.db_manager.mark_patrimonio_encontrado(numero, self.sala_id)
+            self._encontrados_sessao += 1
+            sala_nome = self.sala_label.text().replace("Sala: ", "")
+            self._set_feedback(
+                f"Patrimônio {numero} encontrado na sala {sala_nome}.",
+                "rgb(0, 130, 0)",
+            )
+            logger.info("Patrimônio encontrado: %s", numero)
             if self.parent:
                 self.parent.update_patrimonios_table()
-        else:
-            self.db_manager.record_unfound_patrimonio(numero, self.sala_id)
-            self.feedback_label.setText(f"Patrimônio {numero} não cadastrado e registrado.")
-        
+
         self.input.clear()
 
     def keyPressEvent(self, event):
@@ -118,9 +153,35 @@ class ScanWindow(QDialog):
             super().keyPressEvent(event)
 
     def closeEvent(self, event):
-        """Evento de fechamento da ScanWindow."""
+        """Exibe resumo da sessão e restaura a janela principal."""
+        # Calcular itens ainda não encontrados na sala
+        pendentes = 0
+        if self.sala_id:
+            try:
+                self.db_manager.cursor.execute(
+                    "SELECT COUNT(*) FROM patrimonios WHERE sala_id = ? AND encontrado = 0",
+                    (self.sala_id,)
+                )
+                resultado = self.db_manager.cursor.fetchone()
+                pendentes = resultado[0] if resultado else 0
+            except Exception as e:
+                logger.error("Erro ao calcular pendentes para resumo: %s", e)
+
+        total_sessao = self._encontrados_sessao + self._nao_cadastrados_sessao + self._duplicados_sessao
+        if total_sessao > 0:
+            QMessageBox.information(
+                self,
+                "Resumo da Sessão",
+                f"Resumo dos escaneamentos desta sessão:\n\n"
+                f"✔  Encontrados agora:       {self._encontrados_sessao}\n"
+                f"⚠  Já marcados anteriormente: {self._duplicados_sessao}\n"
+                f"✘  Não cadastrados:         {self._nao_cadastrados_sessao}\n\n"
+                f"Patrimônios ainda pendentes na sala: {pendentes}",
+            )
+
         try:
             if self.parent is not None:
+                self.parent.refresh_after_scan()
                 self.parent.showMaximized()
         except Exception as e:
             logger.error("Erro ao restaurar a janela principal: %s", e)
