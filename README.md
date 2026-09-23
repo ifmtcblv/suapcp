@@ -1,10 +1,10 @@
 # suapcp
 
-Aplicação desktop standalone para conferência de patrimônio do setor público, utilizando leitura de código de barras e dados CSV exportados pelo SUAP.
+Aplicação desktop standalone para conferência de patrimônio do setor público, utilizando leitura de código de barras e dados CSV ou XLSX exportados pelo SUAP.
 
 ## Destaques
 
-- Carrega arquivos CSV de inventário exportados pelo SUAP diretamente em um banco SQLite local
+- Carrega arquivos CSV ou XLSX de inventário exportados pelo SUAP diretamente em um banco SQLite local
 - Escaneia códigos de barras em tempo real com uma pistola sem fio para marcar itens como encontrados ou não cadastrados
 - Filtra salas e patrimônios por nome; alterna a visualização por status (todos, encontrados, não encontrados)
 - Gera relatórios CSV detalhados por sala e geral, incluindo itens encontrados, não encontrados, divergentes e não cadastrados
@@ -31,13 +31,14 @@ make setup
 make run
 ```
 
-### Carregar um CSV exportado do SUAP
+### Carregar uma exportação do SUAP
 
 ```bash
 .venv/bin/python app.py -load caminho/para/exportacao.csv
+.venv/bin/python app.py -load caminho/para/exportacao.xlsx
 ```
 
-Isso importa os dados para o banco local e encerra. Inicie sem `-load` para uso interativo.
+Isso importa os dados para o banco local e encerra. Inicie sem `-load` para uso interativo. Na interface, use **Carregar Arquivo** para escolher `.csv` ou `.xlsx`.
 
 ### Escanear e gerar relatório
 
@@ -51,7 +52,7 @@ Isso importa os dados para o banco local e encerra. Inicie sem `-load` para uso 
 app.py              # Ponto de entrada — inicializa a interface e trata argumentos CLI
 main_window.py      # Janela principal com tabelas de salas e patrimônios
 scan_window.py      # Janela de escaneamento de código de barras
-database.py         # Gerenciador SQLite e lógica de importação CSV
+database.py         # Gerenciador SQLite e lógica de importação CSV/XLSX
 report_generator.py # Geração de relatórios CSV
 requirements.txt    # Dependências Python
 ```

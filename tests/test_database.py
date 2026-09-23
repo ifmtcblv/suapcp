@@ -1,16 +1,17 @@
 """Tests for database.py — unit and integration."""
 
-import csv
-import io
+import zipfile
+from pathlib import Path
+from xml.sax.saxutils import escape
+
 import pytest
 
 from database import (
     DatabaseManager,
+    _fix_shifted_row,
     generate_unique_code,
     load_data_from_file,
-    _fix_shifted_row,
 )
-
 
 # ---------------------------------------------------------------------------
 # generate_unique_code
@@ -235,3 +236,191 @@ class TestLoadDataFromFile:
         salas = db.get_all_salas()
         assert len(salas) == 2
         db.close()
+
+    def test_maps_columns_by_name_and_ignores_extras(self, tmp_path):
+        header = (
+            "SALA,EXTRA,NUMERO,STATUS,ED,DESCRICAO,RÓTULOS,CARGA ATUAL,"
+            "SETOR DO RESPONSÁVEL,CAMPUS DA CARGA,VALOR AQUISIÇÃO,VALOR DEPRECIADO,"
+            "NUMERO NOTA FISCAL,NÚMERO DE SÉRIE,DATA DA ENTRADA,DATA DA CARGA,"
+            "FORNECEDOR,ESTADO DE CONSERVAÇÃO,#\n"
+        )
+        row = (
+            "LAB 3,ignorar,P777,Ativo,ED09,Armário,BLV-STI,Carga X,"
+            "Setor Y,BLV,10.50,8.00,NF9,SER9,2024-01-01,2024-01-02,"
+            "FORN Z,Regular,99\n"
+        )
+        csv_path = tmp_path / "reordered.csv"
+        csv_path.write_text(header + row, encoding="utf-8")
+
+        db = DatabaseManager(db_path=tmp_path / "test.db")
+        load_data_from_file(db.cursor, db.conn, str(csv_path))
+
+        salas = db.get_all_salas()
+        assert [sala[1] for sala in salas] == ["LAB 3"]
+        rows = db.get_patrimonios_by_sala(salas[0][0])
+        assert rows[0][0] == "P777"
+        assert rows[0][3] == "Armário"
+        assert rows[0][4] == "BLV-STI"
+        assert rows[0][7] == "blv"
+        db.close()
+
+    def test_dash_is_empty_and_total_row_is_skipped(self, tmp_path):
+        row = (
+            "1,P001,Ativo,ED01,Mesa,-,-,-,-,500.00,400.00,NF001,"
+            "-,2020-01-01,2020-01-02,FORN A,-,Bom\n"
+        )
+        total = ",,,,,,,,,TOTAL,900.00,400.00,,,,,,\n"
+        csv_path = tmp_path / "data.csv"
+        csv_path.write_text(_make_csv([row, total]), encoding="utf-8")
+
+        db = DatabaseManager(db_path=tmp_path / "test.db")
+        load_data_from_file(db.cursor, db.conn, str(csv_path))
+
+        salas = db.get_all_salas()
+        assert [sala[1] for sala in salas] == ["SEM SALA"]
+        rows = db.get_patrimonios_by_sala(salas[0][0])
+        assert len(rows) == 1
+        assert rows[0][0] == "P001"
+        assert rows[0][4] is None
+        assert rows[0][8] is None
+        db.close()
+
+    def test_loads_xlsx(self, tmp_path):
+        headers = [
+            "#", "NUMERO", "STATUS", "ED", "DESCRICAO", "RÓTULOS",
+            "CARGA ATUAL", "SETOR DO RESPONSÁVEL", "CAMPUS DA CARGA",
+            "VALOR AQUISIÇÃO", "VALOR DEPRECIADO", "NUMERO NOTA FISCAL",
+            "NÚMERO DE SÉRIE", "DATA DA ENTRADA", "DATA DA CARGA",
+            "FORNECEDOR", "SALA", "ESTADO DE CONSERVAÇÃO",
+        ]
+        row = [
+            "1", "P001", "Ativo", "ED01", "Mesa", "BLV-BIB",
+            "Carga", "Setor", "BLV", "500.00", "400.00", "NF001",
+            "SN001", "12/04/2010", "12/04/2010", "FORN A",
+            "Biblioteca(BLOCO G: Administrativo)", "Bom",
+        ]
+        xlsx_path = tmp_path / "data.xlsx"
+        _make_xlsx(xlsx_path, headers, [row])
+
+        db = DatabaseManager(db_path=tmp_path / "test.db")
+        load_data_from_file(db.cursor, db.conn, str(xlsx_path))
+
+        salas = db.get_all_salas()
+        assert salas[0][1] == "BIBLIOTECA(BLOCO G: ADMINISTRATIVO)"
+        rows = db.get_patrimonios_by_sala(salas[0][0])
+        assert rows[0][0] == "P001"
+        assert rows[0][3] == "Mesa"
+        assert rows[0][4] == "BLV-BIB"
+        assert rows[0][9] == "Bom"
+        db.close()
+
+    def test_xlsx_decodes_excel_line_breaks(self, tmp_path):
+        headers = [
+            "#", "NUMERO", "STATUS", "ED", "DESCRICAO", "RÓTULOS",
+            "CARGA ATUAL", "SETOR DO RESPONSÁVEL", "CAMPUS DA CARGA",
+            "VALOR AQUISIÇÃO", "VALOR DEPRECIADO", "NUMERO NOTA FISCAL",
+            "NÚMERO DE SÉRIE", "DATA DA ENTRADA", "DATA DA CARGA",
+            "FORNECEDOR", "SALA", "ESTADO DE CONSERVAÇÃO",
+        ]
+        row = [
+            "1", "P010", "Ativo", "ED01", "LINHA_x000D_\nDOIS", "",
+            "", "", "BLV", "10.00", "9.00", "",
+            "", "", "", "", "SALA 1", "Bom",
+        ]
+        xlsx_path = tmp_path / "breaks.xlsx"
+        _make_xlsx(xlsx_path, headers, [row])
+
+        db = DatabaseManager(db_path=tmp_path / "test.db")
+        load_data_from_file(db.cursor, db.conn, str(xlsx_path))
+        salas = db.get_all_salas()
+        rows = db.get_patrimonios_by_sala(salas[0][0])
+        assert rows[0][3] == "LINHA\r\nDOIS"
+        db.close()
+
+
+def _make_xlsx(path: Path, headers: list[str], data_rows: list[list[str]]) -> None:
+    strings: list[str] = []
+    index: dict[str, int] = {}
+
+    def sid(value: str) -> int:
+        if value not in index:
+            index[value] = len(strings)
+            strings.append(value)
+        return index[value]
+
+    def col_name(column: int) -> str:
+        name = ""
+        number = column + 1
+        while number:
+            number, remainder = divmod(number - 1, 26)
+            name = chr(65 + remainder) + name
+        return name
+
+    sheet_rows = []
+    for row_number, values in enumerate([headers, *data_rows], start=1):
+        cells = []
+        for column, value in enumerate(values):
+            ref = f"{col_name(column)}{row_number}"
+            cells.append(f'<c r="{ref}" t="s"><v>{sid(value)}</v></c>')
+        sheet_rows.append(f'<row r="{row_number}">{"".join(cells)}</row>')
+
+    shared_items = "".join(f"<si><t>{escape(value)}</t></si>" for value in strings)
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f"<sheetData>{''.join(sheet_rows)}</sheetData></worksheet>"
+    )
+    shared_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        f'count="{len(strings)}" uniqueCount="{len(strings)}">{shared_items}</sst>'
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" '
+        'ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/sharedStrings.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+        "</Types>"
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships '
+        'xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+        'officeDocument" '
+        'Target="xl/workbook.xml"/>'
+        "</Relationships>"
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Relatorio" sheetId="1" r:id="rId1"/></sheets>'
+        "</workbook>"
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships '
+        'xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+        'worksheet" '
+        'Target="worksheets/sheet1.xml"/>'
+        "</Relationships>"
+    )
+
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", root_rels)
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        archive.writestr("xl/sharedStrings.xml", shared_xml)

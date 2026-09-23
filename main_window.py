@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class LoadWorker(QThread):
-    """Carrega um CSV exportado do SUAP em thread separada, evitando congelamento da UI."""
+    """Carrega uma exportação CSV ou XLSX do SUAP em thread separada."""
 
     finished = pyqtSignal(int, int)  # (n_patrimonios, n_salas)
     error = pyqtSignal(str)
@@ -30,8 +30,8 @@ class LoadWorker(QThread):
     def run(self):
         """Executa parsing e gravação no banco em segundo plano."""
         try:
-            from database import _parse_csv
-            sala_data, patrimonios_data = _parse_csv(self.file_path)
+            from database import _parse_export
+            sala_data, patrimonios_data = _parse_export(self.file_path)
 
             cursor = self.db_manager.cursor
             conn = self.db_manager.conn
@@ -170,7 +170,7 @@ class MainWindow(QMainWindow):
         footer_layout.addLayout(stats_layout)
         footer_layout.addStretch()
 
-        # Botão para carregar arquivo CSV
+        # Botão para carregar exportação do SUAP (CSV ou XLSX)
         self.load_button = QPushButton("Carregar Arquivo")
         self.load_button.setFont(QFont("Arial", 12))
         self.load_button.setMinimumHeight(48)
@@ -479,16 +479,17 @@ class MainWindow(QMainWindow):
         self.update_patrimonios_table()
 
     # ------------------------------------------------------------------
-    # Carregar arquivo CSV
+    # Carregar exportação do SUAP
     # ------------------------------------------------------------------
 
     def carregar_arquivo(self):
-        """Abre um seletor de arquivo para carregar um CSV exportado do SUAP."""
+        """Abre um seletor de arquivo para carregar um CSV ou XLSX exportado do SUAP."""
         caminho, _ = QFileDialog.getOpenFileName(
             self,
-            "Selecionar arquivo CSV do SUAP",
+            "Selecionar exportação do SUAP",
             "",
-            "Arquivos CSV (*.csv);;Todos os arquivos (*)",
+            "Exportação SUAP (*.csv *.xlsx);;Arquivos CSV (*.csv);;"
+            "Planilhas Excel (*.xlsx)",
         )
         if not caminho:
             return

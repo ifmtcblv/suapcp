@@ -37,14 +37,18 @@ if __name__ == "__main__":
 
     # Processar argumentos da linha de comando
     parser = argparse.ArgumentParser(description="SUAP-CP - Conferência de Patrimônio")
-    parser.add_argument("-load", type=str, help="Caminho do arquivo CSV para carregar dados")
+    parser.add_argument(
+        "-load",
+        type=str,
+        help="Caminho do arquivo CSV ou XLSX exportado pelo SUAP",
+    )
     args = parser.parse_args()
 
     # Inicializar o gerenciador de banco de dados
     db_manager = DatabaseManager()
 
     if args.load:
-        # Modo não gráfico: apenas carregar o CSV e sair
+        # Modo não gráfico: apenas carregar a exportação e sair
         load_data_from_file(db_manager.cursor, db_manager.conn, args.load)
         db_manager.close()
         sys.exit(0)
